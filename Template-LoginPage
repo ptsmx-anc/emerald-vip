@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Login · PTSMC DEV</title>
+<style>
+:root{
+  --bg:#050000;
+  --bg2:#0a0101;
+  --card-bg:rgba(18, 4, 4, 0.85);
+  --card-border:rgba(255, 80, 0, 0.2);
+  --card-glow:rgba(255, 60, 0, 0.15);
+  --fire-main:#ff4500;
+  --fire-bright:#ff7300;
+  --fire-deep:#cc2900;
+  --fire-glow:rgba(255, 69, 0, 0.6);
+  --text:#fff;
+  --text-mute:rgba(255,255,255,.6);
+  --text-faint:rgba(255,255,255,.35);
+  --input-bg:rgba(0, 0, 0, 0.5);
+  --input-border:rgba(255, 255, 255, 0.1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"Segoe UI",Inter,Roboto,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  overflow-x:hidden;
+  min-height:100vh;
+  position:relative;
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 100%, rgba(180, 40, 0, 0.2) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 20% 80%, rgba(200, 60, 0, 0.1) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 35% at 85% 90%, rgba(160, 20, 0, 0.15) 0%, transparent 60%);
+  animation:bgPulse 8s ease-in-out infinite alternate;
+}
+@keyframes bgPulse{
+  0%{opacity:0.7; filter: hue-rotate(0deg);}
+  100%{opacity:1; filter: hue-rotate(-5deg);}
+}
+canvas#particles{position:fixed;inset:0;z-index:1;pointer-events:none}
+
+.login-wrap{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+  position:relative;z-index:2;
+}
+.login-card{
+  width:100%;max-width:420px;
+  background:var(--card-bg);
+  border:1px solid var(--card-border);
+  border-radius:24px;
+  padding:48px 40px;
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
+  box-shadow:
+    0 20px 60px rgba(0,0,0,.9),
+    0 0 40px var(--card-glow),
+    inset 0 1px 0 rgba(255,255,255,.05);
+  animation:cardIn .6s cubic-bezier(.2,.9,.3,1.1) both;
+  position:relative;overflow:hidden;
+}
+.login-card::before{
+  content:'';position:absolute;inset:-1px;border-radius:24px;padding:1px;
+  background:linear-gradient(180deg, rgba(255,80,0,.5) 0%, transparent 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+  pointer-events:none;opacity:.8;
+}
+@keyframes cardIn{
+  from{opacity:0;transform:translateY(30px) scale(.98)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+.brand{
+  text-align:center;margin-bottom:36px;
+}
+.brand-title{
+  font-size:38px;font-weight:900;font-style:italic;letter-spacing:1px;
+  background: linear-gradient(to bottom, #fff, #ffae00, #ff2a00);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 30px rgba(255, 60, 0, 0.4);
+  margin-bottom:8px;
+}
+.brand-tag{
+  font-size:11px;letter-spacing:6px;color:var(--fire-main);font-weight:700;text-transform:uppercase;
+}
+.field{margin-bottom:20px}
+.input{
+  width:100%;
+  background:var(--input-bg);
+  border:1px solid var(--input-border);
+  color:var(--text);
+  padding:15px 18px;
+  border-radius:14px;
+  font-size:14px;
+  font-family:inherit;
+  outline:none;
+  transition:all .3s ease;
+}
+.input::placeholder{color:var(--text-faint);letter-spacing:1px}
+.input:focus{
+  border-color:var(--fire-main);
+  box-shadow:0 0 0 4px rgba(255,69,0,.15), 0 0 20px rgba(255,69,0,.2);
+  background:rgba(20,5,0,.7);
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  width:100%;
+  padding:16px 24px;
+  border:none;cursor:pointer;
+  background:linear-gradient(135deg, var(--fire-bright) 0%, var(--fire-deep) 100%);
+  color:#fff;font-weight:800;letter-spacing:3px;font-size:13px;
+  border-radius:14px;
+  transition:all .2s ease;
+  box-shadow:
+    0 10px 25px rgba(255,60,0,.4),
+    inset 0 1px 1px rgba(255,255,255,.3);
+  position:relative;overflow:hidden;
+  text-transform:uppercase;
+  font-family:inherit;
+}
+.btn::after{
+  content:'';position:absolute;inset:0;border-radius:14px;
+  box-shadow:0 0 30px rgba(255,100,0,.6);
+  opacity:0;transition:opacity .3s;pointer-events:none;
+}
+.btn:hover{transform:translateY(-2px);filter:brightness(1.15);}
+.btn:hover::after{opacity:1;}
+.btn:active{transform:translateY(1px);box-shadow:0 5px 15px rgba(255,60,0,.4);}
+.muted{color:var(--text-faint);font-size:11px;letter-spacing:1px;margin-top:16px;text-align:center;text-transform:uppercase;}
+
+@media (max-width:600px){
+  .login-card{padding:40px 24px}
+  .brand-title{font-size:32px}
+}
+</style>
+</head>
+<body>
+<canvas id="particles"></canvas>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-title">PTSMC DEV</div>
+      <div class="brand-tag">BY PTSMC TEAM</div>
+    </div>
+    <form id="loginForm" data-loading>
+      <div class="field">
+        <input type="password" name="password" class="input" placeholder="ENTER SECURE PASSWORD" required autofocus>
+      </div>
+      <button type="submit" class="btn">AUTHENTICATE</button>
+    </form>
+    <div class="muted">Restricted Area</div>
+  </div>
+</div>
+
+<script>
+// Realistic Fire Particle Background
+(function(){
+  const c = document.getElementById('particles');
+  if(!c) return;
+  const ctx = c.getContext('2d');
+  let w, h, parts = [];
+  function resize(){ w = c.width = innerWidth; h = c.height = innerHeight; }
+  resize(); addEventListener('resize', resize);
+  
+  const N = Math.min(200, Math.floor((w * h) / 12000));
+  
+  function createParticle() {
+    return {
+      x: Math.random() * w,
+      y: h + Math.random() * 100,
+      vx: (Math.random() - 0.5) * 1.5,
+      vy: -(Math.random() * 4 + 1.5),
+      r: Math.random() * 4 + 2,
+      life: Math.random() * 100 + 50,
+      maxLife: 150,
+      hue: Math.random() * 30 + 10
+    };
+  }
+
+  for(let i=0; i<N; i++) parts.push(createParticle());
+
+  function tick(){
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(5, 0, 0, 0.3)';
+    ctx.fillRect(0, 0, w, h);
+    
+    ctx.globalCompositeOperation = 'lighter';
+
+    for(let i=0; i<parts.length; i++){
+      let p = parts[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life--;
+      p.r = Math.max(0, p.r - 0.02);
+
+      p.vx += (Math.random() - 0.5) * 0.1;
+
+      if(p.life <= 0 || p.r <= 0 || p.y < -50){
+        parts[i] = createParticle();
+        parts[i].y = h + 10;
+      }
+
+      let alpha = Math.max(0, p.life / p.maxLife);
+      let color = `hsla(${p.hue}, 100%, 50%, ${alpha})`;
+      
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${p.hue}, 100%, 50%, ${alpha * 0.2})`;
+      ctx.fill();
+    }
+    requestAnimationFrame(tick);
+  }
+  tick();
+})();
+
+// Form auto-disable on submit
+document.querySelectorAll('form[data-loading]').forEach(f=>{
+  f.addEventListener('submit',function(e){
+    e.preventDefault(); // Prevent default submission for HTML demo
+    const b=f.querySelector('button[type=submit]');
+    if(b){b.disabled=true;b.style.opacity=.7;b.textContent='PROCESSING...'}
+  });
+});
+</script>
+</body>
+</html>
